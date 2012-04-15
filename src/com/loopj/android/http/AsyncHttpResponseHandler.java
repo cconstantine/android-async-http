@@ -19,13 +19,18 @@
 package com.loopj.android.http;
 
 import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
 
+import org.apache.http.Header;
 import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.StatusLine;
 import org.apache.http.client.HttpResponseException;
 import org.apache.http.entity.BufferedHttpEntity;
 import org.apache.http.util.EntityUtils;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 import android.os.Handler;
 import android.os.Message;
@@ -108,6 +113,8 @@ public class AsyncHttpResponseHandler {
      * @param content the body of the HTTP response from the server
      */
     public void onSuccess(String content) {}
+    public void onSuccess(InputStream content) {}
+    public void onSuccess(JSONObject content) {}
 
     /**
      * Fired when a request fails to complete, override to handle in your own code
@@ -131,6 +138,15 @@ public class AsyncHttpResponseHandler {
     // Pre-processing of messages (executes in background threadpool thread)
     //
 
+
+	private void sendSuccessMessage(JSONObject jsonObject) {
+        sendMessage(obtainMessage(SUCCESS_MESSAGE, jsonObject));
+	}
+
+	private void sendSuccessMessage(InputStream content) {
+        sendMessage(obtainMessage(SUCCESS_MESSAGE, content));
+	}
+	
     protected void sendSuccessMessage(String responseBody) {
         sendMessage(obtainMessage(SUCCESS_MESSAGE, responseBody));
     }
@@ -152,7 +168,24 @@ public class AsyncHttpResponseHandler {
     // Pre-processing of messages (in original calling thread, typically the UI thread)
     //
 
+    protected void onSuccess(Object obj) {
+    	if (obj instanceof String)
+    		handleSuccessMessage((String)obj);
+    	else if (obj instanceof InputStream)
+    		handleSuccessMessage((InputStream)obj);
+    	else if (obj instanceof JSONObject)
+    		handleSuccessMessage((JSONObject)obj);
+    }
+    
     protected void handleSuccessMessage(String responseBody) {
+        onSuccess(responseBody);
+    }
+
+    protected void handleSuccessMessage(JSONObject responseBody) {
+        onSuccess(responseBody);
+    }
+
+    protected void handleSuccessMessage(InputStream responseBody) {
         onSuccess(responseBody);
     }
 
@@ -166,7 +199,7 @@ public class AsyncHttpResponseHandler {
     protected void handleMessage(Message msg) {
         switch(msg.what) {
             case SUCCESS_MESSAGE:
-                handleSuccessMessage((String)msg.obj);
+        		onSuccess(msg.obj);
                 break;
             case FAILURE_MESSAGE:
                 Object[] repsonse = (Object[])msg.obj;
@@ -205,22 +238,43 @@ public class AsyncHttpResponseHandler {
     // Interface to AsyncHttpRequest
     void sendResponseMessage(HttpResponse response) {
         StatusLine status = response.getStatusLine();
-        String responseBody = null;
-        try {
-            HttpEntity entity = null;
+        HttpEntity entity = null;
+		try {
             HttpEntity temp = response.getEntity();
             if(temp != null) {
                 entity = new BufferedHttpEntity(temp);
             }
-            responseBody = EntityUtils.toString(entity);
+	        if(status.getStatusCode() >= 300) {
+	    		sendFailureMessage(new HttpResponseException(status.getStatusCode(), status.getReasonPhrase()), EntityUtils.toString(entity));
+	        } else {
+	        	Header h = response.getLastHeader("Content-Type");
+	        	if (h.getValue() != null && h.getValue().contains("charset")) {
+		        	InputStreamReader isr = new InputStreamReader((InputStream)entity.getContent());
+		        	char[] buffer = new char[512];
+		        	StringBuilder sb = new StringBuilder();
+		        	int read;
+		        	do {
+		        		read = isr.read(buffer);
+		        		if(read>0) {
+		        			sb.append(buffer, 0, read);
+		        		}
+		        	} while( read >= 0);	
+		        	String resp = sb.toString();
+		        	if(h.getValue().contains("application/json")) {
+		        		sendSuccessMessage(new JSONObject(resp));
+		        	} else {
+		        		sendSuccessMessage(sb.toString());
+		        	}
+		
+				}  else {
+					sendSuccessMessage(entity.getContent());
+				}
+	        }
         } catch(IOException e) {
             sendFailureMessage(e, null);
-        }
-
-        if(status.getStatusCode() >= 300) {
-            sendFailureMessage(new HttpResponseException(status.getStatusCode(), status.getReasonPhrase()), responseBody);
-        } else {
-            sendSuccessMessage(responseBody);
-        }
+        } catch (JSONException e) {
+            sendFailureMessage(e, null);
+		}
     }
+
 }
